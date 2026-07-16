@@ -411,6 +411,17 @@ class _LottieState extends State<Lottie> with TickerProviderStateMixin {
     _initAnimation();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Update TickerMode state for LottieController
+    final controller = widget.controller;
+    if (controller is LottieController) {
+      final tickerMode = TickerMode.of(context);
+      controller.setTickerModeEnabled(enabled: tickerMode);
+    }
+  }
+
   void _initAnimation() {
     if (_isExternalAnimationController) {
       // External AnimationController: use traditional Ticker drive
@@ -423,6 +434,11 @@ class _LottieState extends State<Lottie> with TickerProviderStateMixin {
     } else {
       // No external controller or LottieController: use Timer drive
       _startTimer();
+      // Attach lifecycle notifier for LottieController
+      final controller = widget.controller;
+      if (controller is LottieController) {
+        controller.attachLifecycleNotifier();
+      }
     }
   }
 
@@ -577,6 +593,11 @@ class _LottieState extends State<Lottie> with TickerProviderStateMixin {
     _timer = null;
     _autoAnimation?.dispose();
     _autoAnimation = null;
+    // Detach lifecycle notifier for LottieController
+    final controller = widget.controller;
+    if (controller is LottieController) {
+      controller.detachLifecycleNotifier();
+    }
     widget.controller?.removeListener(_onLottieControllerChanged);
     super.dispose();
   }

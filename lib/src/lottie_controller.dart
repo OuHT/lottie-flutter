@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'package:flutter/animation.dart';
+import 'package:flutter/widgets.dart';
 
 /// A custom animation controller that drives animations using [Timer.periodic]
 /// instead of Flutter's Ticker/Vsync mechanism.
@@ -16,6 +16,11 @@ import 'package:flutter/animation.dart';
 /// - [value] getter/setter
 /// - [addListener], [addStatusListener]
 /// - [duration], [isAnimating], [status]
+///
+/// **TickerMode and App Lifecycle support:**
+/// - Automatically pauses when [TickerMode] is disabled (e.g., off-screen route)
+/// - Automatically pauses when app goes to background ([AppLifecycleState.paused])
+/// - Automatically resumes when [TickerMode] is re-enabled or app returns to foreground
 ///
 /// **Limitations compared to [AnimationController]:**
 /// - [fling] and [animateWith] are not supported (requires physics simulation)
@@ -141,7 +146,10 @@ class LottieController extends Animation<double>
   AnimationStatus get status => _status;
 
   @override
-  bool get isAnimating => _isAnimating;
+  bool get isAnimating => _isAnimating && _timer != null;
+
+  /// Whether the animation is currently paused (was running but timer is stopped).
+  bool get isPaused => _isAnimating && _timer == null;
 
   @override
   bool get isDismissed => status == AnimationStatus.dismissed;
@@ -230,6 +238,7 @@ class LottieController extends Animation<double>
     _timer?.cancel();
     _timer = null;
     _isAnimating = false;
+    _wasRunningBeforePause = false;
 
     if (_completeCompleter != null) {
       if (!_completeCompleter!.isCompleted) {
@@ -256,6 +265,7 @@ class LottieController extends Animation<double>
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _detachLifecycleNotifier();
     stop();
     clearListeners();
     clearStatusListeners();
@@ -298,6 +308,12 @@ class LottieController extends Animation<double>
   _AnimationDirection _direction = _AnimationDirection.forward;
   Completer<void>? _completeCompleter;
 
+  // TickerMode and App Lifecycle support
+  bool _tickerModeEnabled = true;
+  bool _appIsActive = true;
+  bool _wasRunningBeforePause = false;
+  AppLifecycleListener? _lifecycleListener;
+
   // animateTo state
   double _startValue = 0.0;
   double _targetValue = 1.0;
@@ -314,6 +330,98 @@ class LottieController extends Animation<double>
   int? _repeatCount;
 
   AnimationStatus _lastReportedStatus = AnimationStatus.dismissed;
+
+  // ===========================================================================
+  // TickerMode and App Lifecycle Support
+  // ===========================================================================
+
+  /// Attaches this controller to [TickerMode] and [AppLifecycleState] notifications.
+  ///
+  /// This should be called when the controller is used with a widget that needs
+  /// automatic pause/resume behavior (e.g., when navigating to another route
+  /// or when the app goes to background).
+  ///
+  /// Typically called from [State.didChangeDependencies] or [State.initState].
+  void attachLifecycleNotifier() {
+    _detachLifecycleNotifier();
+
+    // Listen to app lifecycle changes
+    _lifecycleListener = AppLifecycleListener(
+      onStateChange: (state) {
+        _handleAppLifecycleStateChange(state);
+      },
+    );
+  }
+
+  /// Detaches from [TickerMode] and [AppLifecycleState] notifications.
+  void detachLifecycleNotifier() {
+    _detachLifecycleNotifier();
+  }
+
+  void _detachLifecycleNotifier() {
+    _lifecycleListener?.dispose();
+    _lifecycleListener = null;
+  }
+
+  /// Updates the TickerMode enabled state from the widget's build context.
+  /// Called by [Lottie] widget when building.
+  void setTickerModeEnabled({required bool enabled}) {
+    if (_tickerModeEnabled == enabled) return;
+    _tickerModeEnabled = enabled;
+    _handlePauseResume();
+  }
+
+  void _handleAppLifecycleStateChange(AppLifecycleState state) {
+    final isActive = state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
+    if (_appIsActive == isActive) return;
+    _appIsActive = isActive;
+    _handlePauseResume();
+  }
+
+  void _handlePauseResume() {
+    final shouldRun = _tickerModeEnabled && _appIsActive;
+    if (shouldRun) {
+      // Should be running
+      if (_wasRunningBeforePause && _timer == null) {
+        // Resume from where we left off (timer is null means we're paused)
+        _resumeAnimation();
+      }
+    } else {
+      // Should pause
+      if (_timer != null) {
+        _wasRunningBeforePause = true;
+        _pauseAnimation();
+      } else {
+        _wasRunningBeforePause = false;
+      }
+    }
+  }
+
+  void _pauseAnimation() {
+    if (_timer == null) return;
+    // Capture elapsed time
+    final now = DateTime.now();
+    if (_startTime != null) {
+      _elapsedAtLastStart += now.difference(_startTime!);
+    }
+    _timer!.cancel();
+    _timer = null;
+    // Note: _isAnimating stays true internally for resume capability,
+    // but isAnimating getter returns false when timer is null
+  }
+
+  void _resumeAnimation() {
+    if (_timer != null) return; // Already running
+    if (!_isAnimating) return; // Not animating, nothing to resume
+
+    _startTime = DateTime.now();
+    if (_animateDuration != null) {
+      _timer = Timer.periodic(_tickInterval, _onAnimateTick);
+    } else if (_repeatPeriod != null) {
+      _timer = Timer.periodic(_tickInterval, _onRepeatTick);
+    }
+  }
 
   // ===========================================================================
   // Internal Implementation
